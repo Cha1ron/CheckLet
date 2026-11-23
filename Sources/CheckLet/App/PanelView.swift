@@ -7,6 +7,8 @@ struct PanelView: View {
     @State private var draft = ""
     @State private var pickedDate = Calendar.current.date(byAdding: .day, value: 7, to: Date()) ?? Date()
     @State private var pickedCategory: TodoCategory?
+    /// 用户点了预览上的 ✕：这次不识别日期
+    @State private var ignoreDates = false
     @FocusState private var inputFocused: Bool
 
     var body: some View {
@@ -25,6 +27,7 @@ struct PanelView: View {
                     .padding(.top, 4)
                     .onTapGesture { vm.errorMessage = nil }
             }
+            hintLine
             addBar
         }
         .overlay(
@@ -33,6 +36,10 @@ struct PanelView: View {
         )
         .onReceive(vm.$focusToken.dropFirst()) { _ in
             DispatchQueue.main.async { inputFocused = true }
+        }
+        .onAppear {
+            // 调试截图用：预填输入框，看日期识别提示
+            if let d = ProcessInfo.processInfo.environment["CHECKLET_SNAPSHOT_DRAFT"] { draft = d }
         }
     }
 
@@ -124,8 +131,9 @@ struct PanelView: View {
 
     private var list: some View {
         let items = vm.filtered
+        let upcoming = vm.nextWeek
         return Group {
-            if items.isEmpty {
+            if items.isEmpty && upcoming.isEmpty {
                 VStack(spacing: 8) {
                     Spacer()
                     Image(systemName: emptyIcon)
@@ -144,6 +152,18 @@ struct PanelView: View {
                     LazyVStack(spacing: 2) {
                         ForEach(items) { item in
                             TodoRow(item: item, vm: vm)
+                        }
+                        if !upcoming.isEmpty {
+                            HStack {
+                                Text("下周").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                                Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.top, items.isEmpty ? 2 : 10)
+                            .padding(.bottom, 2)
+                            ForEach(upcoming) { item in
+                                TodoRow(item: item, vm: vm).opacity(0.75)
+                            }
                         }
                     }
                     .padding(.horizontal, 8)
@@ -164,13 +184,62 @@ struct PanelView: View {
 
     private var emptyText: String {
         switch vm.tab {
-        case .today: return "今天没有待办，享受一下吧\n也可以让 Claude / Codex 帮你加"
-        case .week: return "这周还没有计划"
-        case .date: return "记下生日、截止日、纪念日\n会显示倒计时"
+        case .today: return "今天没有待办，享受一下吧\n输入「明天交报告」会自动排到明天"
+        case .week: return "这周还没有计划\n试试输入「周三下午3点开会」"
+        case .date: return "记下生日、截止日、纪念日\n如「7月29日女朋友生日」，每年自动提醒"
         }
     }
 
     // MARK: 添加
+
+    /// 输入时：预览识别到的日期；添加后：提示加到了哪里
+    @ViewBuilder private var hintLine: some View {
+        if let preview = datePreview {
+            HStack(spacing: 6) {
+                Image(systemName: preview.yearly ? "gift" : "calendar")
+                    .font(.system(size: 11, weight: .medium))
+                Text(preview.text).font(.system(size: 11.5, weight: .medium))
+                Spacer(minLength: 4)
+                Button { ignoreDates = true } label: {
+                    Image(systemName: "xmark").font(.system(size: 8.5, weight: .bold)).padding(3)
+                }
+                .buttonStyle(.plain)
+                .help("不识别日期，按原文添加")
+            }
+            .foregroundStyle(Color.accentColor)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .padding(.horizontal, 12)
+            .padding(.top, 6)
+            .transition(.opacity)
+        } else if let toast = vm.toast {
+            Label(toast, systemImage: "checkmark.circle.fill")
+                .font(.system(size: 11.5))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 18)
+                .padding(.top, 6)
+                .transition(.opacity)
+        }
+    }
+
+    private var datePreview: (text: String, yearly: Bool)? {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !ignoreDates else { return nil }
+        let p = DateParser.parse(TodoCategory.extractTag(from: text).0, today: vm.today)
+        guard !p.isEmpty else { return nil }
+        if let weekOf = p.weekOf {
+            return ("\(weekOf == Day.weekStart(of: vm.today) ? "这周" : "下周") → 本周\(p.title != text ? "：" + p.title : "")", false)
+        }
+        guard var day = p.day else { return nil }
+        let scope: TodoScope = vm.tab == .date
+            ? .date : TodoService.autoScope(due: day, weekOf: nil, important: p.important, today: vm.today)
+        let yearly = scope == .date && p.yearly
+        if yearly, day < vm.today { day = TodoService.nextOccurrence(of: day, onOrAfter: vm.today) ?? day }
+        let when = TodoViewModel.whenText(day: day, time: p.time, yearly: yearly, today: vm.today)
+        return ("\(when) → \(scope.title)\(p.title != text ? "：" + p.title : "")", yearly)
+    }
 
     private var addBar: some View {
         HStack(spacing: 8) {
@@ -189,7 +258,8 @@ struct PanelView: View {
                 .font(.system(size: 13))
                 .focused($inputFocused)
                 .onSubmit(submit)
-            if vm.tab == .date {
+                .onChange(of: draft) { v in if v.isEmpty { ignoreDates = false } }
+            if vm.tab == .date && datePreview == nil {
                 DatePicker("", selection: $pickedDate, displayedComponents: .date)
                     .labelsHidden()
                     .datePickerStyle(.field)
@@ -207,18 +277,19 @@ struct PanelView: View {
 
     private var placeholder: String {
         switch vm.tab {
-        case .today: return "添加今日待办，回车确认"
-        case .week: return "添加本周待办，回车确认"
-        case .date: return "重要日子，如：妈妈生日"
+        case .today: return "添加待办，如「明天下午3点开会」"
+        case .week: return "添加本周待办，如「周三交方案」"
+        case .date: return "如「7月29日女朋友生日」"
         }
     }
 
     private func submit() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        vm.add(text, date: vm.tab == .date ? pickedDate : nil, category: pickedCategory)
+        vm.add(text, fallbackDate: vm.tab == .date ? pickedDate : nil, parseDates: !ignoreDates, category: pickedCategory)
         draft = ""
         pickedCategory = nil
+        ignoreDates = false
     }
 }
 
@@ -318,16 +389,30 @@ struct TodoRow: View {
 
     private var metaParts: [(text: String, color: Color)] {
         var out: [(String, Color)] = []
+        let today = vm.today
         switch item.scope {
-        case .today where item.isCarriedOver(today: vm.today):
-            out.append(("从 \(Day.shortCN(item.day)) 顺延", .orange))
-        case .week where item.isCarriedOver(today: vm.today):
-            out.append(("上周遗留", .orange))
+        case .today:
+            if item.isCarriedOver(today: today) { out.append(("从 \(Day.shortCN(item.day)) 顺延", .orange)) }
+            if let t = item.time { out.append((t, item.done ? .secondary : .accentColor)) }
+        case .week:
+            if let d = item.due {
+                let late = item.isCarriedOver(today: today)
+                let color: Color = item.done ? .secondary : (late ? .orange : (d == today ? .accentColor : .secondary))
+                var text = TodoViewModel.whenText(day: d, time: item.time, yearly: false, today: today)
+                if late { text += " · 已过" }
+                if vm.tab == .today && !late { text = "本周 · " + text }
+                out.append((text, color))
+            } else if item.isCarriedOver(today: today) {
+                out.append(("上周遗留", .orange))
+            }
         case .date:
-            let n = Day.daysBetween(vm.today, item.day)
+            let n = Day.daysBetween(today, item.day)
             let color: Color = item.done ? .secondary : (n <= 1 ? .red : (n <= 7 ? .orange : .secondary))
-            out.append(("\(Day.shortCN(item.day)) \(Day.weekdayName(item.day)) · \(item.countdownText(today: vm.today))", color))
-        default: break
+            var text = "\(Day.shortCN(item.day)) \(Day.weekdayName(item.day))"
+            if let t = item.time { text += " \(t)" }
+            text += " · \(item.countdownText(today: today))"
+            if item.isYearly { text = "🎂 " + text }
+            out.append((text, color))
         }
         return out
     }
@@ -341,8 +426,8 @@ struct TodoRow: View {
             }
         }
         Divider()
-        if item.scope == .today {
-            Button("推迟到明天") { vm.postpone(item.id) }
+        if item.scope == .today || item.due != nil {
+            Button("推迟一天") { vm.postpone(item.id) }
         }
         if item.scope != .today { Button("移到今日") { vm.move(item.id, to: .today) } }
         if item.scope != .week { Button("移到本周") { vm.move(item.id, to: .week) } }

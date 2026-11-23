@@ -5,7 +5,7 @@ import Foundation
 /// `CheckLet.app/Contents/MacOS/CheckLet mcp` 启动它，然后调用下面的工具管理待办。
 final class MCPServer {
     static var version: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.2.0"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.3.0"
     }
     private let service = TodoService()
     private var clientName = "AI"
@@ -113,6 +113,7 @@ final class MCPServer {
 
         switch name {
         case "list_todos":
+            _ = try? service.rollYearly()
             let items = service.list(scope: try scope("list"), category: try category(a["category"]),
                                      includeDone: bool("include_done") ?? true,
                                      includeUpcoming: bool("include_upcoming") ?? false)
@@ -120,7 +121,8 @@ final class MCPServer {
 
         case "add_todo":
             guard let title = str("title") else { throw TodoError.invalid("缺少 title") }
-            let item = try service.add(title: title, scope: try scope("list") ?? .today, date: str("date"),
+            let item = try service.add(title: title, scope: try scope("list"), date: str("date"),
+                                       time: str("time"), yearly: bool("yearly"),
                                        note: str("note"), source: clientName,
                                        category: try category(a["category"]), categorySource: .ai)
             return "已添加到「\(item.scope.title)」：\n" + TodoFormatter.line(item)
@@ -132,8 +134,9 @@ final class MCPServer {
             var lines: [String] = []
             for entry in list {
                 guard let title = entry["title"] as? String else { continue }
-                let s = (entry["list"] as? String).flatMap(TodoScope.init(loose:)) ?? .today
+                let s = (entry["list"] as? String).flatMap(TodoScope.init(loose:))
                 let item = try service.add(title: title, scope: s, date: entry["date"] as? String,
+                                           time: entry["time"] as? String, yearly: entry["yearly"] as? Bool,
                                            note: entry["note"] as? String, source: clientName,
                                            category: try category(entry["category"]), categorySource: .ai)
                 lines.append("「\(item.scope.title)」" + TodoFormatter.line(item))
@@ -149,7 +152,8 @@ final class MCPServer {
         case "update_todo":
             guard let ref = str("id") else { throw TodoError.invalid("需要 id") }
             let item = try service.update(ref, title: str("title"), scope: try scope("list"),
-                                          date: str("date"), note: str("note"),
+                                          date: str("date"), time: str("time"), yearly: bool("yearly"),
+                                          note: str("note"),
                                           category: try category(a["category"]), categorySource: .ai)
             return "已更新：" + TodoFormatter.line(item)
 
@@ -168,9 +172,13 @@ final class MCPServer {
     static let instructions = """
     CheckLet 是用户 Mac 桌面上的悬浮待办清单，分三个清单：today（今日待办）、week（本周待办）、date（重要日期，比如生日、截止日、纪念日）。
     当用户说"把…加到待办/清单/CheckLet""提醒我…""这周要…""X 月 X 日是…"时使用这些工具。
-    - 今日待办：list=today；如果用户说"明天要做X"，用 list=today 并把 date 设为明天，它会在那天出现。
-    - 本周待办：list=week。
-    - 重要日期：list=date，必须给 date（YYYY-MM-DD）。
+    日期规则（一般不用传 list，传 date 即可，CheckLet 会自动放进合适的清单）：
+    - 用户说了具体哪天（周三、明天、7月29日…）：把 date 换算成 YYYY-MM-DD 传入，有具体时间就传 time（HH:mm），title 里不要再写日期。
+      今天的事 → 今日；这周和下周的事 → 本周，到那天会自动出现在今日；更远的日子和生日 / 考试 / 截止日 → 重要日期。
+    - 生日、纪念日：list=date 并传 yearly=true，每年自动重复。
+    - 只说"这周 / 下周要做"、没说哪天：list=week（下周的事可以传下周任意一天作为 date）。
+    - 没提日期：默认今日（list=today）。
+    如果用户开启了日历同步，有日期的待办会自动出现在系统日历里并带提醒，无需另外操作。
     未完成的今日/本周待办会自动顺延。完成或删除前如果不确定是哪一条，先调用 list_todos 拿到 id。
     每条待办都有分类 category，添加时请根据内容主动选一个最合适的：
     \(TodoCategory.allCases.map { "- \($0.rawValue)：\($0.name)（\($0.meaning)）" }.joined(separator: "\n"))
@@ -188,7 +196,7 @@ final class MCPServer {
     private static let listEnum: [String: Any] = [
         "type": "string",
         "enum": ["today", "week", "date"],
-        "description": "today=今日待办，week=本周待办，date=重要日期",
+        "description": "today=今日待办，week=本周待办，date=重要日期。不传时根据 date 自动决定",
     ]
 
     static let tools: [[String: Any]] = [
@@ -218,7 +226,9 @@ final class MCPServer {
                     "title": ["type": "string", "description": "待办内容，简洁明了"],
                     "list": listEnum,
                     "date": ["type": "string",
-                             "description": "YYYY-MM-DD。date 清单必填；today 清单填未来日期则到那天才出现；week 清单表示那一周"],
+                             "description": "YYYY-MM-DD，事情发生 / 截止的那天。date 清单必填"],
+                    "time": ["type": "string", "description": "可选，具体时间 HH:mm，如 15:00"],
+                    "yearly": ["type": "boolean", "description": "每年重复（生日、纪念日），配合 list=date"],
                     "note": ["type": "string", "description": "可选备注"],
                     "category": categoryEnum,
                 ],
@@ -240,6 +250,8 @@ final class MCPServer {
                                 "title": ["type": "string"],
                                 "list": listEnum,
                                 "date": ["type": "string", "description": "YYYY-MM-DD"],
+                                "time": ["type": "string", "description": "HH:mm"],
+                                "yearly": ["type": "boolean"],
                                 "note": ["type": "string"],
                                 "category": categoryEnum,
                             ],
@@ -274,6 +286,8 @@ final class MCPServer {
                     "title": ["type": "string"],
                     "list": listEnum,
                     "date": ["type": "string", "description": "YYYY-MM-DD"],
+                    "time": ["type": "string", "description": "HH:mm；传空字符串可清除时间"],
+                    "yearly": ["type": "boolean"],
                     "note": ["type": "string", "description": "传空字符串可清除备注"],
                     "category": categoryEnum,
                 ],

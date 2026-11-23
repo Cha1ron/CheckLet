@@ -6,7 +6,7 @@ import Foundation
 ///   CheckLet add "写周报" [--week | --date 2026-12-01 | --on tomorrow] [--note "..."]
 ///   CheckLet done <id或标题> / undo <id> / rm <id>
 enum CLI {
-    static let commands: Set<String> = ["list", "ls", "add", "done", "undo", "rm", "delete", "update",
+    static let commands: Set<String> = ["list", "ls", "add", "done", "undo", "rm", "delete", "update", "parse",
                                         "help", "--help", "-h", "version", "--version"]
 
     static func run(_ args: [String]) -> Int32 {
@@ -48,15 +48,18 @@ enum CLI {
                     guard let c = TodoCategory(loose: raw) else { throw TodoError.invalid("未知分类：\(raw)") }
                     category = c
                 }
-                var scope: TodoScope = .today
+                var scope: TodoScope?
                 var date: String?
                 if let d = option("--date", "-d") { scope = .date; date = d }
                 if let d = option("--on") { date = d }
+                let time = option("--time")
                 if flag("--week", "-w") { scope = .week }
                 if flag("--today", "-t") { scope = .today }
+                let yearly: Bool? = flag("--yearly", "-y") ? true : nil
+                let raw = flag("--raw")
                 let title = rest.joined(separator: " ")
-                let item = try service.add(title: title, scope: scope, date: date, note: note, source: "cli",
-                                           category: category)
+                let item = try service.add(title: title, scope: scope, date: date, time: time, yearly: yearly,
+                                           parseDates: !raw, note: note, source: "cli", category: category)
                 print("已添加到「\(item.scope.title)」: " + TodoFormatter.line(item))
             case "done", "undo":
                 let item = try service.setDone(rest.joined(separator: " "), done: cmd == "done")
@@ -64,6 +67,13 @@ enum CLI {
             case "rm", "delete":
                 let item = try service.delete(rest.joined(separator: " "))
                 print("已删除: \(item.title)")
+            case "parse":
+                for text in rest {
+                    let p = DateParser.parse(text)
+                    let scope = p.hasDate
+                        ? TodoService.autoScope(due: p.day, weekOf: p.weekOf, important: p.important).title : "-"
+                    print("\(text) → 「\(p.title)」 day=\(p.day ?? "-") \(p.day.map(Day.weekdayName) ?? "") week=\(p.weekOf ?? "-") time=\(p.time ?? "-")\(p.yearly ? " 每年" : "") → \(scope)")
+                }
             case "update":
                 return runUpdate(checkOnly: flag("--check"), relaunch: !flag("--no-relaunch"))
             case "version", "--version":
@@ -86,10 +96,14 @@ enum CLI {
       CheckLet                         启动悬浮球
       CheckLet mcp                     以 MCP 服务方式运行（给 AI 工具用）
       CheckLet list [today|week|date]  查看待办（-a 包含未来的，-c 生活 只看某分类）
-      CheckLet add <内容> [选项]        添加待办
+      CheckLet add <内容> [选项]        添加待办（会自动识别「周三」「明天下午3点」「7月29日」，
+                                       并放进合适的清单）
           --week, -w                   加到本周
           --date, -d <日期>            加到重要日期，如 2026-12-01 / 12-01 / 明天
-          --on <日期>                  今日待办在指定那天出现
+          --on <日期>                  指定哪天（也可以直接写在内容里：周三开会、7月29日妈妈生日）
+          --time <时间>                如 15:30
+          --yearly, -y                 每年重复（生日、纪念日）
+          --raw                        不从内容里识别日期
           --note, -n <备注>
           --cat, -c <分类>              工作/学习/生活/健康/财务/人情/其他（不填自动分类，
                                        也可以在内容里写 #生活）

@@ -34,6 +34,8 @@ struct GeneralSettings: View {
     @AppStorage(Prefs.showBall) private var showBall = true
     @State private var launchAtLogin = false
     @State private var loginError: String?
+    @ObservedObject private var calendar = CalendarSync.shared
+    @State private var calendarRefresh = 0
 
     var body: some View {
         Form {
@@ -58,6 +60,32 @@ struct GeneralSettings: View {
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            Section("日期与日历") {
+                Text("输入「周三下午3点开会」「明天交报告」「7月29日女朋友生日」会自动识别日期：这两周内的事放进「本周」，到那天自动出现在「今日」；生日、考试、截止日和更远的日子放进「重要日期」，生日、纪念日每年重复。")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Toggle("同步到系统日历（用日历的提醒通知你）", isOn: Binding(
+                    get: { calendar.enabled },
+                    set: { calendar.setEnabled($0); calendarRefresh += 1 }))
+                if calendar.enabled {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(calendar.statusText)
+                            .font(.callout)
+                            .foregroundStyle(calendar.status == .denied ? Color.orange : Color.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer()
+                        if calendar.status == .denied {
+                            Button("打开系统设置") { CalendarSync.openPrivacySettings() }
+                        } else {
+                            Button("打开日历") { CalendarSync.openCalendarApp() }
+                        }
+                    }
+                }
+                Text("有日期的待办会写进日历里单独的「CheckLet」日历：全天的当天 9:00 提醒，有时间的提前 15 分钟，重要日期再提前一天提醒。打勾后保留日程、取消提醒；删除待办会删掉日程。")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .id(calendarRefresh)
             Section("快捷键") {
                 Picker("显示 / 隐藏面板", selection: $hotKey) {
                     ForEach(HotKeyPreset.allCases) { p in

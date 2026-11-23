@@ -43,6 +43,17 @@ struct TodoItem: Codable, Identifiable, Equatable {
     /// 分类 id 与来源（存成字符串，未来新增分类时旧版本也不会读坏文件）
     var categoryID: String?
     var categorySourceID: String?
+    /// 具体哪天要做 / 发生（用户说了日期才有）。本周待办的 day 是周一，due 才是具体哪天
+    var due: String?
+    /// 具体时间 "HH:mm"
+    var time: String?
+    /// 每年重复（生日、纪念日）
+    var yearly: Bool?
+
+    var isYearly: Bool { yearly ?? false }
+
+    /// 有明确日期的条目：会同步到日历，到了那天会出现在「今日」
+    var eventDay: String? { due ?? (scope == .date ? day : nil) }
 
     var category: TodoCategory? {
         get { categoryID.flatMap(TodoCategory.init(rawValue:)) }
@@ -76,8 +87,19 @@ struct TodoItem: Codable, Identifiable, Equatable {
         }
     }
 
+    /// 本周 / 重要日期里、到了日子的条目，也显示在「今日」
+    func showsInToday(today: String = Day.today) -> Bool {
+        guard scope != .today, let d = eventDay, isVisible(today: today) else { return false }
+        if done { return d <= today }
+        switch scope {
+        case .week: return d <= today        // 没做完的继续留在今日
+        default: return d == today
+        }
+    }
+
     /// 今日待办是从之前的日子顺延来的
     func isCarriedOver(today: String = Day.today) -> Bool {
+        if scope == .week, let d = due, !done, d < today { return true }
         switch scope {
         case .today: return !done && day < today
         case .week: return !done && day < Day.weekStart(of: today)
@@ -114,13 +136,25 @@ struct TodoFile: Codable {
 }
 
 extension Array where Element == TodoItem {
-    /// 某个清单下应显示的条目（已排序）
+    /// 某个清单下应显示的条目（已排序）。「今日」还会带上本周 / 重要日期里到了日子的条目
     func visible(_ scope: TodoScope, today: String = Day.today) -> [TodoItem] {
-        let list = filter { $0.scope == scope && $0.isVisible(today: today) }
+        let list = filter {
+            ($0.scope == scope && $0.isVisible(today: today)) || (scope == .today && $0.showsInToday(today: today))
+        }
         return list.sorted { a, b in
             if a.done != b.done { return !a.done }
-            if scope == .date, a.day != b.day { return a.day < b.day }
+            let da = a.eventDay ?? (scope == .date ? a.day : "9999"), db = b.eventDay ?? (scope == .date ? b.day : "9999")
+            if da != db { return da < db }
+            let ta = a.time ?? "99", tb = b.time ?? "99"
+            if ta != tb { return ta < tb }
             return a.createdAt < b.createdAt
         }
+    }
+
+    /// 本周清单下方预告：下周已经安排好的事
+    func nextWeek(today: String = Day.today) -> [TodoItem] {
+        let next = Day.adding(days: 7, to: Day.weekStart(of: today))
+        return filter { $0.scope == .week && !$0.done && $0.day == next }
+            .sorted { ($0.due ?? "9999", $0.time ?? "99") < ($1.due ?? "9999", $1.time ?? "99") }
     }
 }

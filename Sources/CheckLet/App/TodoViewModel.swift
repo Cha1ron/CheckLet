@@ -15,6 +15,8 @@ final class TodoViewModel: ObservableObject {
     /// 递增一次 = 让输入框获得焦点
     @Published var focusToken = 0
     @Published var errorMessage: String?
+    /// 添加后的一句提示，比如「已加到本周 · 11月25日 周三」
+    @Published var toast: String?
 
     var onTogglePin: () -> Void = {}
     var onOpenSettings: () -> Void = {}
@@ -29,6 +31,7 @@ final class TodoViewModel: ObservableObject {
     init(store: TodoStore = .shared) {
         self.store = store
         self.service = TodoService(store: store)
+        _ = try? service.rollYearly()
         reload()
         // 每秒检查一次：数据文件被 AI / 命令行改过就刷新；跨天了也刷新
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.poll() }
@@ -39,6 +42,7 @@ final class TodoViewModel: ObservableObject {
         let now = Day.today
         if now != today {
             today = now
+            _ = try? service.rollYearly(today: now)
             _ = try? service.purgeOldCompleted()
             reload()
             return
@@ -49,7 +53,10 @@ final class TodoViewModel: ObservableObject {
     func reload() {
         lastModified = store.modificationDate
         let loaded = store.load()
-        if loaded != items { items = loaded }
+        if loaded != items {
+            items = loaded
+            CalendarSync.shared.sync(loaded)
+        }
         // 旧数据补分类；"关键词猜的"交给 Apple Intelligence 复核（如果可用）
         if loaded.contains(where: { $0.category == nil }) {
             _ = try? service.classifyUncategorized()
@@ -79,6 +86,14 @@ final class TodoViewModel: ObservableObject {
         }
     }
 
+    /// 本周清单下方：下周已经安排的事
+    var nextWeek: [TodoItem] {
+        guard tab == .week else { return [] }
+        let list = items.nextWeek(today: today)
+        guard let f = categoryFilter else { return list }
+        return list.filter { $0.displayCategory == f }
+    }
+
     func openCount(_ scope: TodoScope) -> Int { visible(scope).filter { !$0.done }.count }
 
     var todayProgress: (done: Int, total: Int) {
@@ -93,8 +108,45 @@ final class TodoViewModel: ObservableObject {
 
     // MARK: 写
 
-    func add(_ title: String, date: Date? = nil, category: TodoCategory? = nil) {
-        perform { try service.add(title: title, scope: tab, date: date.map(Day.string), source: nil, category: category) }
+    /// 添加：内容里写了日期（周三、明天下午3点、7月29日…）会自动识别并放进合适的清单
+    func add(_ title: String, fallbackDate: Date? = nil, parseDates: Bool = true, category: TodoCategory? = nil) {
+        var added: TodoItem?
+        perform {
+            added = try service.add(title: title, preferredScope: tab, fallbackDate: fallbackDate.map(Day.string),
+                                    parseDates: parseDates, source: nil, category: category)
+            return added as Any
+        }
+        guard let item = added else { return }
+        let when = Self.whenText(item, today: today)
+        if item.scope != tab || when != nil {
+            showToast("已加到「\(item.scope.title)」" + (when.map { " · " + $0 } ?? ""))
+        }
+    }
+
+    private var toastTimer: Timer?
+    private func showToast(_ text: String) {
+        toast = text
+        toastTimer?.invalidate()
+        toastTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: false) { [weak self] _ in self?.toast = nil }
+    }
+
+    /// "11月25日 周三 15:00"、"每年 7月29日"、"下周"
+    static func whenText(_ item: TodoItem, today: String) -> String? {
+        guard let d = item.eventDay else {
+            if item.scope == .week && item.day > Day.weekStart(of: today) { return "下周" }
+            return item.time
+        }
+        return whenText(day: d, time: item.time, yearly: item.isYearly, today: today)
+    }
+
+    static func whenText(day d: String, time: String?, yearly: Bool, today: String) -> String {
+        let rel: String
+        switch Day.daysBetween(today, d) {
+        case 0: rel = "今天"
+        case 1: rel = "明天"
+        default: rel = "\(Day.shortCN(d)) \(Day.weekdayName(d))"
+        }
+        return (yearly ? "每年 \(Day.shortCN(d))" : rel) + (time.map { " " + $0 } ?? "")
     }
 
     func setCategory(_ id: String, _ category: TodoCategory) {
@@ -106,7 +158,7 @@ final class TodoViewModel: ObservableObject {
     func rename(_ id: String, to title: String) { perform { try service.update(id, title: title) } }
     func move(_ id: String, to scope: TodoScope) { perform { try service.update(id, scope: scope) } }
     func postpone(_ id: String) {
-        perform { try service.update(id, date: Day.adding(days: 1, to: today)) }
+        perform { try service.postpone(id) }
     }
 
     private func perform(_ body: () throws -> Any) {

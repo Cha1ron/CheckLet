@@ -36,6 +36,7 @@ struct TodoService {
         let today = Day.today
         let scopes = scope.map { [$0] } ?? TodoScope.allCases
         var result: [TodoItem] = []
+        var seen = Set<String>()
         for s in scopes {
             var items = all.visible(s, today: today)
             if includeUpcoming {
@@ -45,6 +46,7 @@ struct TodoService {
             }
             if !includeDone { items = items.filter { !$0.done } }
             if let category { items = items.filter { $0.displayCategory == category } }
+            items = items.filter { seen.insert($0.id).inserted }
             result += items
         }
         return result
@@ -52,24 +54,62 @@ struct TodoService {
 
     // MARK: 修改
 
+    /// 添加待办。
+    /// - scope: 明确指定的清单；nil = 根据识别到的日期自动决定（没日期就用 preferredScope）
+    /// - date: 明确给的日期（优先）；没有就从标题里识别「周三」「7月29日」这类说法
+    /// - fallbackDate: 标题里也没识别到日期时用（比如面板里重要日期的日期选择器）
     @discardableResult
-    func add(title rawTitle: String, scope: TodoScope = .today, date: String? = nil,
+    func add(title rawTitle: String, scope explicitScope: TodoScope? = nil, preferredScope: TodoScope = .today,
+             date: String? = nil, fallbackDate: String? = nil, time explicitTime: String? = nil,
+             yearly explicitYearly: Bool? = nil, parseDates: Bool = true,
              note: String? = nil, source: String? = nil,
              category explicit: TodoCategory? = nil, categorySource: CategorySource = .user) throws -> TodoItem {
         // 支持在内容里写 "#生活" 指定分类
         let (tagStripped, tagged) = TodoCategory.extractTag(from: rawTitle)
-        let title = tagStripped.trimmingCharacters(in: .whitespacesAndNewlines)
+        var title = tagStripped.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { throw TodoError.invalid("待办内容不能为空") }
-        let parsed = try parseDate(date)
 
+        let today = Day.today
+        var due = try parseDate(date)
+        var weekOf: String?
+        var time = try parseTime(explicitTime)
+        let parsed = DateParser.parse(title, today: today)
+        if parseDates {
+            if due == nil && time == nil && !parsed.isEmpty {
+                // 标题里说了日期 / 时间：用它，并把这几个字从标题里去掉
+                due = parsed.day
+                weekOf = parsed.weekOf
+                time = parsed.time
+                title = parsed.title
+            } else if due == nil, explicitScope == .date || preferredScope == .date, let d = parsed.day {
+                due = d
+            }
+        }
+        if due == nil, weekOf == nil, let f = try parseDate(fallbackDate) { due = f }
+
+        let scope: TodoScope
+        if let explicitScope {
+            scope = explicitScope
+        } else if due != nil || weekOf != nil {
+            scope = preferredScope == .date && due != nil
+                ? .date
+                : Self.autoScope(due: due, weekOf: weekOf, important: parsed.important, today: today)
+        } else {
+            scope = preferredScope
+        }
+
+        var yearly = explicitYearly ?? (scope == .date && parsed.yearly)
         let day: String
         switch scope {
-        case .today: day = parsed ?? Day.today
-        case .week: day = Day.weekStart(of: parsed ?? Day.today)
+        case .today: day = due ?? today
+        case .week: day = Day.weekStart(of: due ?? weekOf ?? today)
         case .date:
-            guard let parsed else { throw TodoError.invalid("重要日期需要提供 date（格式 YYYY-MM-DD）") }
-            day = parsed
+            guard var d = due else { throw TodoError.invalid("重要日期需要提供 date（格式 YYYY-MM-DD）") }
+            if yearly, d < today { d = Self.nextOccurrence(of: d, onOrAfter: today) ?? d }
+            due = d
+            day = d
         }
+        if scope != .date { yearly = false }
 
         let category: TodoCategory
         let how: CategorySource
@@ -89,9 +129,34 @@ struct TodoService {
                                 note: note?.nilIfBlank, source: source?.nilIfBlank)
             item.category = category
             item.categorySource = how
+            item.due = due
+            item.time = time
+            item.yearly = yearly ? true : nil
             items.append(item)
             return item
         }
+    }
+
+    /// 根据日期决定放进哪个清单
+    ///  - 生日 / 考试 / 截止日这类 → 重要日期
+    ///  - 今天（或已经过了的日子）→ 今日
+    ///  - 这周、下周 → 本周（到那天会自动出现在今日）
+    ///  - 更远的 → 重要日期（带倒计时）
+    static func autoScope(due: String?, weekOf: String?, important: Bool, today: String = Day.today) -> TodoScope {
+        guard let due else { return .week }
+        if important { return .date }
+        if due <= today { return .today }
+        let ws = Day.weekStart(of: today)
+        let target = Day.weekStart(of: due)
+        if target == ws || target == Day.adding(days: 7, to: ws) { return .week }
+        return .date
+    }
+
+    /// 每年重复的日子：下一次是哪天
+    static func nextOccurrence(of day: String, onOrAfter today: String) -> String? {
+        guard let d = Day.date(day) else { return nil }
+        let c = Day.calendar.dateComponents([.month, .day], from: d)
+        return DateParser.nextMonthDay(c.month ?? 1, c.day ?? 1, today: today)
     }
 
     @discardableResult
@@ -116,9 +181,11 @@ struct TodoService {
 
     @discardableResult
     func update(_ ref: String, title: String? = nil, scope: TodoScope? = nil,
-                date: String? = nil, note: String? = nil,
+                date: String? = nil, time: String? = nil, yearly: Bool? = nil, note: String? = nil,
                 category: TodoCategory? = nil, categorySource: CategorySource = .user) throws -> TodoItem {
         let parsed = try parseDate(date)
+        let clearTime = time.map { $0.trimmingCharacters(in: .whitespaces).isEmpty || $0 == "none" } ?? false
+        let parsedTime = clearTime ? nil : try parseTime(time)
         let updated: TodoItem = try store.mutate { items in
             let i = try Self.resolve(ref, in: items)
             if let t = title?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty {
@@ -135,7 +202,12 @@ struct TodoService {
                 items[i].categorySource = categorySource
             }
             if let note { items[i].note = note.nilIfBlank }
+            if clearTime { items[i].time = nil } else if let parsedTime { items[i].time = parsedTime }
             let newScope = scope ?? items[i].scope
+            if let parsed { items[i].due = parsed } else if scope != nil, scope != items[i].scope {
+                // 换清单但没给日期：移到今日 / 本周就不再绑定原来那天
+                if newScope != .date { items[i].due = nil }
+            }
             if scope != nil || parsed != nil {
                 switch newScope {
                 case .today: items[i].day = parsed ?? (scope != nil ? Day.today : items[i].day)
@@ -145,15 +217,54 @@ struct TodoService {
                         throw TodoError.invalid("移到「重要日期」需要提供 date（YYYY-MM-DD）")
                     }
                     items[i].day = d
+                    items[i].due = d
                 }
                 items[i].scope = newScope
             }
+            if let yearly { items[i].yearly = yearly && items[i].scope == .date ? true : nil }
+            if items[i].scope != .date { items[i].yearly = nil }
             return items[i]
         }
         if category != nil, categorySource == .user {
             classifier.learn(title: updated.title, category: updated.displayCategory)
         }
         return updated
+    }
+
+    /// 推迟一天（有具体日期的连日期一起推）
+    @discardableResult
+    func postpone(_ ref: String, days: Int = 1) throws -> TodoItem {
+        try store.mutate { items in
+            let i = try Self.resolve(ref, in: items)
+            let base = max(items[i].eventDay ?? items[i].day, Day.today)
+            let target = Day.adding(days: days, to: base)
+            switch items[i].scope {
+            case .today: items[i].day = target
+            case .week: items[i].day = Day.weekStart(of: target)
+            case .date: items[i].day = target
+            }
+            if items[i].due != nil || items[i].scope == .date { items[i].due = target }
+            return items[i]
+        }
+    }
+
+    /// 每天跑一次：每年重复的日子过了之后，挪到明年并取消打勾
+    @discardableResult
+    func rollYearly(today: String = Day.today) throws -> Int {
+        let all = store.load()
+        guard all.contains(where: { $0.isYearly && $0.day < today }) else { return 0 }
+        return try store.mutate { items in
+            var n = 0
+            for i in items.indices where items[i].isYearly && items[i].day < today {
+                guard let next = Self.nextOccurrence(of: items[i].day, onOrAfter: today) else { continue }
+                items[i].day = next
+                items[i].due = next
+                items[i].done = false
+                items[i].doneAt = nil
+                n += 1
+            }
+            return n
+        }
     }
 
     /// 给没有分类的旧待办补上分类（升级后第一次启动时）
@@ -194,7 +305,7 @@ struct TodoService {
     func purgeOldCompleted() throws -> Int {
         try store.mutate { items in
             let before = items.count
-            items.removeAll { $0.done && !$0.isVisible() }
+            items.removeAll { $0.done && !$0.isYearly && !$0.isVisible() }
             return before - items.count
         }
     }
@@ -207,6 +318,17 @@ struct TodoService {
             throw TodoError.invalid("无法识别日期「\(raw)」，请使用 YYYY-MM-DD 格式")
         }
         return d
+    }
+
+    /// "15:30" / "3点半" / "下午3点" → "HH:mm"
+    private func parseTime(_ raw: String?) throws -> String? {
+        guard let raw = raw?.trimmingCharacters(in: .whitespaces), !raw.isEmpty, raw != "none" else { return nil }
+        let parts = raw.split(whereSeparator: { $0 == ":" || $0 == "：" }).compactMap { Int($0) }
+        if parts.count == 2, (0...23).contains(parts[0]), (0...59).contains(parts[1]) {
+            return String(format: "%02d:%02d", parts[0], parts[1])
+        }
+        if let t = DateParser.parse(raw).time { return t }
+        throw TodoError.invalid("无法识别时间「\(raw)」，请使用 HH:mm 格式，如 15:30")
     }
 
     static func newID() -> String {
@@ -251,14 +373,17 @@ enum TodoFormatter {
         var meta: [String] = []
         switch t.scope {
         case .today:
-            if t.day > today { meta.append("\(t.day) 起") }
+            if t.day > today { meta.append("\(t.day) \(Day.weekdayName(t.day))") }
             else if t.isCarriedOver(today: today) { meta.append("从 \(t.day) 顺延") }
         case .week:
-            if t.day > Day.weekStart(of: today) { meta.append("\(t.day) 那周") }
-            else if t.isCarriedOver(today: today) { meta.append("上周遗留") }
+            if let d = t.due { meta.append("\(d) \(Day.weekdayName(d))\(t.time.map { " " + $0 } ?? "")") }
+            else if t.day > Day.weekStart(of: today) { meta.append("\(t.day) 那周") }
+            if t.isCarriedOver(today: today) { meta.append(t.due != nil ? "已过期" : "上周遗留") }
         case .date:
-            meta.append("\(t.day) \(Day.weekdayName(t.day))，\(t.countdownText(today: today))")
+            meta.append("\(t.day) \(Day.weekdayName(t.day))\(t.time.map { " " + $0 } ?? "")，\(t.countdownText(today: today))")
+            if t.isYearly { meta.append("每年") }
         }
+        if t.scope == .today, let time = t.time { meta.append(time) }
         if let n = t.note { meta.append("备注: \(n)") }
         if let src = t.sourceLabel { meta.append("来自 \(src)") }
         if !meta.isEmpty { s += " — " + meta.joined(separator: "；") }

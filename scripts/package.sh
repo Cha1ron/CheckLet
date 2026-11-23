@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
 
 APP_NAME="CheckLet"
 BUNDLE_ID="${BUNDLE_ID:-com.checklet.app}"
-VERSION="${VERSION:-1.2.0}"
+VERSION="${VERSION:-1.3.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-$(date +%Y%m%d%H%M)}"
 MIN_MACOS="13.0"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
@@ -62,6 +62,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSHumanReadableCopyright</key><string>CheckLet</string>
+  <key>NSCalendarsUsageDescription</key><string>把有日期的待办写进日历「CheckLet」，用日历的提醒通知你。</string>
+  <key>NSCalendarsFullAccessUsageDescription</key><string>把有日期的待办写进日历「CheckLet」，并在待办修改、完成或删除时同步更新对应日程。</string>
 </dict>
 </plist>
 PLIST
@@ -70,7 +72,15 @@ echo "▸ 签名（$SIGN_IDENTITY）"
 if [ "$SIGN_IDENTITY" = "-" ]; then
   codesign --force --deep --sign - "$APP"
 else
-  codesign --force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
+  ENT="$WORK/CheckLet.entitlements"
+  cat > "$ENT" <<ENTXML
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>com.apple.security.personal-information.calendars</key><true/>
+</dict></plist>
+ENTXML
+  codesign --force --deep --options runtime --timestamp --entitlements "$ENT" --sign "$SIGN_IDENTITY" "$APP"
 fi
 codesign --verify --deep --strict "$APP"
 

@@ -12,6 +12,8 @@ enum Prefs {
     static let autoUpdate = "autoCheckUpdates"     // Bool
     static let lastUpdateCheck = "lastUpdateCheck" // Date
     static let skippedVersion = "skippedVersion"   // String
+    static let calendarSync = "calendarSync"       // Bool
+    static let calendarID = "calendarID"           // String
 
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
