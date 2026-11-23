@@ -4,7 +4,9 @@ import Foundation
 /// Claude Desktop / Claude Code / Codex / Cursor 等支持 MCP 的 AI 工具都通过
 /// `CheckLet.app/Contents/MacOS/CheckLet mcp` 启动它，然后调用下面的工具管理待办。
 final class MCPServer {
-    static let version = "1.1.0"
+    static var version: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.2.0"
+    }
     private let service = TodoService()
     private var clientName = "AI"
 

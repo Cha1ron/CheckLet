@@ -14,6 +14,7 @@ Mac 桌面上的半透明悬浮待办小球。鼠标移上去显示今日 / 本�
 | **重要日期** | 生日、截止日等，显示"明天 / 还有 8 天"倒计时，可以打勾 |
 | **自动分类** | 工作 / 学习 / 生活 / 健康 / 财务 / 人情，不选也会自动识别，还会学习你的修正习惯 |
 | **AI 连接** | 内置 MCP 服务，Claude Desktop / Claude Code / Codex 一键连接；其他支持 MCP 的工具粘贴配置即可 |
+| **自动更新** | 每天检查 GitHub 上的新版本，一键下载、校验并安装，数据和设置都保留 |
 | **外观** | 磨砂玻璃 / 液态玻璃（macOS 26+）/ 高透明，不透明度可调，跟随系统深浅色 |
 
 ## 安装
@@ -49,6 +50,16 @@ cp -R dist/CheckLet.app /Applications/
 - 鼠标移到小球上 → 显示待办；点击小球 → 固定显示
 - **⌃⌥T** → 固定显示并直接输入，再按一次隐藏（可在设置里更换快捷键）
 - 拖动小球换位置；右键小球或点菜单栏图标 → 设置、连接 AI 工具、开机启动
+
+### 更新
+
+1.2.0 起支持应用内更新：有新版本时，面板顶部会出现提示，点「更新」即可。CheckLet 会自动下载、校验并替换，然后重新打开，待办数据、设置和 AI 连接都会保留。
+
+- 手动检查：菜单栏图标 → 检查更新…（或 设置 → 关于）
+- 不想每天自动检查：设置 → 关于 → 关掉「每天自动检查更新」
+- 命令行：`/Applications/CheckLet.app/Contents/MacOS/CheckLet update`
+
+> 1.1.0 及更早的版本没有这个功能，需要手动下载新版 DMG 覆盖安装一次。
 
 ### 卸载
 
@@ -124,6 +135,19 @@ $C rm 3fa2c1                 # 删除
 swift build && .build/debug/CheckLet    # 直接运行调试版
 ./scripts/package.sh                    # 打包 → dist/（通用二进制 .app、.dmg、.zip）
 ```
+
+### 发布新版本
+
+1. 改代码，更新 `scripts/package.sh` 里的默认版本号（或运行时传 `VERSION=x.y.z`）
+2. 打包：`./scripts/package.sh`
+3. 提交、打标签、推送：`git tag -a vX.Y.Z -m "..." && git push origin main vX.Y.Z`
+4. 在 GitHub 发布 Release，**同时上传 `.dmg` 和 `.zip`**（应用内更新用的是 zip）：
+
+   ```bash
+   gh release create vX.Y.Z dist/CheckLet-X.Y.Z.dmg dist/CheckLet-X.Y.Z.zip --title "CheckLet X.Y.Z" --notes "更新说明"
+   ```
+
+已安装的用户会在一天内收到更新提示。
 
 ### 发布签名版本
 

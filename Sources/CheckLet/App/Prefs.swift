@@ -9,6 +9,9 @@ enum Prefs {
     static let pinned = "panelPinned"          // Bool
     static let ballX = "ballX"
     static let ballY = "ballY"
+    static let autoUpdate = "autoCheckUpdates"     // Bool
+    static let lastUpdateCheck = "lastUpdateCheck" // Date
+    static let skippedVersion = "skippedVersion"   // String
 
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
@@ -17,6 +20,7 @@ enum Prefs {
             hotKey: HotKeyPreset.ctrlOptT.rawValue,
             showBall: true,
             pinned: false,
+            autoUpdate: true,
         ])
     }
 }

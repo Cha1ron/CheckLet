@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// 命令行：方便能执行 shell 命令、但不支持 MCP 的 AI 工具或脚本使用。
@@ -5,7 +6,8 @@ import Foundation
 ///   CheckLet add "写周报" [--week | --date 2026-12-01 | --on tomorrow] [--note "..."]
 ///   CheckLet done <id或标题> / undo <id> / rm <id>
 enum CLI {
-    static let commands: Set<String> = ["list", "ls", "add", "done", "undo", "rm", "delete", "help", "--help", "-h", "version", "--version"]
+    static let commands: Set<String> = ["list", "ls", "add", "done", "undo", "rm", "delete", "update",
+                                        "help", "--help", "-h", "version", "--version"]
 
     static func run(_ args: [String]) -> Int32 {
         let service = TodoService()
@@ -62,8 +64,10 @@ enum CLI {
             case "rm", "delete":
                 let item = try service.delete(rest.joined(separator: " "))
                 print("已删除: \(item.title)")
+            case "update":
+                return runUpdate(checkOnly: flag("--check"), relaunch: !flag("--no-relaunch"))
             case "version", "--version":
-                print("CheckLet \(MCPServer.version)")
+                print("CheckLet \(Updater.currentVersion)")
             default:
                 print(help)
             }
@@ -92,5 +96,44 @@ enum CLI {
       CheckLet done <id或标题>          打勾
       CheckLet undo <id或标题>          取消打勾
       CheckLet rm <id或标题>            删除
+      CheckLet update [--check]        检查并安装新版本（--check 只检查，
+                                       --no-relaunch 不重启正在运行的 CheckLet）
     """
+
+    private final class Box: @unchecked Sendable { var code: Int32 = 0 }
+
+    static func runUpdate(checkOnly: Bool, relaunch: Bool) -> Int32 {
+        let box = Box()
+        let done = DispatchSemaphore(value: 0)
+        Task {
+            defer { done.signal() }
+            do {
+                let info = try await Updater.fetchLatest()
+                print("当前版本 \(Updater.currentVersion)，最新版本 \(info.version)")
+                guard Updater.isNewer(info.version, than: Updater.currentVersion) else {
+                    print("已经是最新版本 ✅")
+                    return
+                }
+                if checkOnly { print("运行 CheckLet update 即可更新：\(info.pageURL.absoluteString)"); return }
+                try Updater.checkInstallLocation()
+                print("下载并校验 \(info.version)…")
+                let app = try await Updater.prepare(info) { _ in }
+                // 默认：关掉正在运行的悬浮球，替换完成后再打开；--no-relaunch 只替换文件，下次启动生效
+                let me = ProcessInfo.processInfo.processIdentifier
+                let running = relaunch
+                    ? NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+                        .filter { $0.processIdentifier != me && $0.bundleURL == Bundle.main.bundleURL }
+                    : []
+                running.forEach { $0.terminate() }
+                try Updater.launchReplacer(newApp: app, waitFor: [me] + running.map(\.processIdentifier),
+                                           relaunch: relaunch)
+                print("校验通过，正在安装 \(info.version)\(relaunch ? "，完成后会自动打开" : "（下次启动生效）")")
+            } catch {
+                FileHandle.standardError.write((Updater.describe(error) + "\n").data(using: .utf8)!)
+                box.code = 1
+            }
+        }
+        done.wait()
+        return box.code
+    }
 }

@@ -245,14 +245,19 @@ struct CopyBox: View {
 // MARK: - 关于
 
 struct AboutView: View {
+    @ObservedObject private var updater = Updater.shared
+    @AppStorage(Prefs.autoUpdate) private var autoUpdate = true
+
     var body: some View {
+        ScrollView {
         VStack(spacing: 12) {
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
                 .frame(width: 80, height: 80)
             Text("CheckLet").font(.title.bold())
-            Text("版本 \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? MCPServer.version)")
+            Text("版本 \(Updater.currentVersion)")
                 .foregroundStyle(.secondary)
+            updateBox
             VStack(alignment: .leading, spacing: 6) {
                 Text("• 鼠标移到悬浮球上 → 显示待办")
                 Text("• 点击悬浮球 / 按快捷键 → 固定显示")
@@ -262,8 +267,72 @@ struct AboutView: View {
             }
             .font(.callout)
             .padding(.top, 8)
-            Spacer()
         }
         .padding(30)
+        .frame(maxWidth: .infinity)
+        }
+    }
+
+    private var updateBox: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                statusLine
+                Spacer()
+                switch updater.state {
+                case .checking, .downloading, .installing:
+                    EmptyView()
+                default:
+                    if updater.latest != nil {
+                        Button("更新到 \(updater.latest!.version)") { updater.install() }
+                            .buttonStyle(.borderedProminent)
+                    }
+                    Button("检查更新") { updater.check(userInitiated: true) }
+                }
+            }
+            if let info = updater.latest, !info.notes.isEmpty {
+                ScrollView {
+                    Text(Self.plain(info.notes))
+                        .font(.caption)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+                .frame(maxHeight: 110)
+                Link("在 GitHub 查看", destination: info.pageURL).font(.caption)
+            }
+            Toggle("每天自动检查更新", isOn: $autoUpdate).font(.callout)
+        }
+        .padding(12)
+        .frame(width: 440)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    @ViewBuilder private var statusLine: some View {
+        switch updater.state {
+        case .checking:
+            HStack(spacing: 6) { ProgressView().controlSize(.small); Text("正在检查…") }
+        case .upToDate:
+            Label("已经是最新版本", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+        case .available:
+            Label("发现新版本 \(updater.latest?.version ?? "")", systemImage: "arrow.down.circle.fill").foregroundStyle(.blue)
+        case .downloading(let p):
+            HStack(spacing: 6) { ProgressView(value: p).frame(width: 120); Text("下载中 \(Int(p * 100))%") }
+        case .installing:
+            HStack(spacing: 6) { ProgressView().controlSize(.small); Text("正在安装，马上重新打开…") }
+        case .failed(let m):
+            Label(m, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        case .idle:
+            Text("自动更新：从 GitHub 下载并校验后安装").foregroundStyle(.secondary)
+        }
+    }
+
+    /// 把 Markdown 更新说明转成纯文本
+    static func plain(_ md: String) -> String {
+        md.components(separatedBy: "\n").map { line in
+            var l = line
+            while l.hasPrefix("#") { l.removeFirst() }
+            return l.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "`", with: "")
+                .trimmingCharacters(in: .whitespaces)
+        }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

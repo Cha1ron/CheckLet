@@ -45,6 +45,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         applyPrefs(force: true)
         buildStatusItem()
 
+        Updater.shared.onChange = { [weak self] in
+            guard let self else { return }
+            self.statusItem.menu = self.makeMenu()
+        }
+        Updater.shared.startAutomaticChecks()
+
         if UserDefaults.standard.bool(forKey: Prefs.showBall) { ballPanel.orderFrontRegardless() }
         if vm.pinned { showPanel(focus: false) }
 
@@ -59,7 +65,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                                             name: Self.showNotification, object: nil)
 
         if let dir = ProcessInfo.processInfo.environment["CHECKLET_SNAPSHOT"] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.writeSnapshots(to: dir) }
+            Updater.shared.check(userInitiated: false)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4) { self.writeSnapshots(to: dir) }
         }
     }
 
@@ -356,6 +363,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(showBall)
 
         menu.addItem(.separator())
+        if let info = Updater.shared.latest {
+            let up = NSMenuItem(title: "⬆️ 更新到 \(info.version)", action: #selector(installUpdate), keyEquivalent: "")
+            up.target = self
+            menu.addItem(up)
+        }
+        let check = NSMenuItem(title: "检查更新…", action: #selector(checkForUpdates), keyEquivalent: "")
+        check.target = self
+        menu.addItem(check)
         let settings = NSMenuItem(title: "设置…", action: #selector(openSettingsMenu), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
@@ -379,6 +394,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func openSettingsMenu() { openSettings(tab: 0) }
+    @objc private func installUpdate() { Updater.shared.install() }
+    @objc private func checkForUpdates() {
+        openSettings(tab: 2)
+        Updater.shared.check(userInitiated: true)
+    }
     @objc private func openAISettings() { openSettings(tab: 1) }
 
     func openSettings(tab: Int) {

@@ -3,6 +3,7 @@ import SwiftUI
 
 struct PanelView: View {
     @ObservedObject var vm: TodoViewModel
+    @ObservedObject private var updater = Updater.shared
     @State private var draft = ""
     @State private var pickedDate = Calendar.current.date(byAdding: .day, value: 7, to: Date()) ?? Date()
     @State private var pickedCategory: TodoCategory?
@@ -11,6 +12,7 @@ struct PanelView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            UpdateBanner(updater: updater)
             tabs
             categoryFilters
             Divider().opacity(0.4).padding(.horizontal, 14)
@@ -461,5 +463,69 @@ enum CategoryMenu {
         }
         menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
         withExtendedLifetime(handler) {}
+    }
+}
+
+// MARK: - 更新提示
+
+struct UpdateBanner: View {
+    @ObservedObject var updater: Updater
+
+    var body: some View {
+        content
+            .font(.system(size: 12))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder private var content: some View {
+        switch updater.state {
+        case .downloading(let p):
+            banner {
+                ProgressView(value: p).progressViewStyle(.linear).frame(width: 90)
+                Text("正在下载新版本 \(Int(p * 100))%")
+            }
+        case .installing:
+            banner {
+                ProgressView().controlSize(.small)
+                Text("正在安装，马上重新打开…")
+            }
+        case .failed(let message) where updater.latest != nil:
+            banner {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                Text(message).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 4)
+                Button("重试") { updater.install() }
+                if let url = updater.latest?.pageURL {
+                    Button("手动下载") { NSWorkspace.shared.open(url) }
+                }
+            }
+        default:
+            if let info = updater.latest {
+                banner {
+                    Text("🎉")
+                    Text("新版本 \(info.version) 可用").fontWeight(.medium)
+                    Spacer(minLength: 4)
+                    Button("更新") { updater.install() }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    Button {
+                        updater.skipCurrent()
+                    } label: {
+                        Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("跳过这个版本")
+                }
+            }
+        }
+    }
+
+    private func banner<C: View>(@ViewBuilder _ c: () -> C) -> some View {
+        HStack(spacing: 8) { c() }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(Color.accentColor.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }

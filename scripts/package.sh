@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
 
 APP_NAME="CheckLet"
 BUNDLE_ID="${BUNDLE_ID:-com.checklet.app}"
-VERSION="${VERSION:-1.1.0}"
+VERSION="${VERSION:-1.2.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-$(date +%Y%m%d%H%M)}"
 MIN_MACOS="13.0"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
