@@ -20,11 +20,18 @@ enum TodoError: LocalizedError {
 
 /// UI、MCP、命令行共用的业务逻辑
 struct TodoService {
-    var store: TodoStore = .shared
+    let store: TodoStore
+    let classifier: Classifier
+
+    init(store: TodoStore = .shared) {
+        self.store = store
+        self.classifier = Classifier(store: store)
+    }
 
     // MARK: 查询
 
-    func list(scope: TodoScope?, includeDone: Bool = true, includeUpcoming: Bool = false) -> [TodoItem] {
+    func list(scope: TodoScope?, category: TodoCategory? = nil,
+              includeDone: Bool = true, includeUpcoming: Bool = false) -> [TodoItem] {
         let all = store.load()
         let today = Day.today
         let scopes = scope.map { [$0] } ?? TodoScope.allCases
@@ -37,6 +44,7 @@ struct TodoService {
                 items += upcoming
             }
             if !includeDone { items = items.filter { !$0.done } }
+            if let category { items = items.filter { $0.displayCategory == category } }
             result += items
         }
         return result
@@ -46,8 +54,11 @@ struct TodoService {
 
     @discardableResult
     func add(title rawTitle: String, scope: TodoScope = .today, date: String? = nil,
-             note: String? = nil, source: String? = nil) throws -> TodoItem {
-        let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+             note: String? = nil, source: String? = nil,
+             category explicit: TodoCategory? = nil, categorySource: CategorySource = .user) throws -> TodoItem {
+        // 支持在内容里写 "#生活" 指定分类
+        let (tagStripped, tagged) = TodoCategory.extractTag(from: rawTitle)
+        let title = tagStripped.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { throw TodoError.invalid("待办内容不能为空") }
         let parsed = try parseDate(date)
 
@@ -60,12 +71,24 @@ struct TodoService {
             day = parsed
         }
 
+        let category: TodoCategory
+        let how: CategorySource
+        if let chosen = explicit ?? tagged {
+            category = chosen
+            how = explicit != nil ? categorySource : .user
+            if how == .user { classifier.learn(title: title, category: chosen) }
+        } else {
+            (category, how) = classifier.classify(title)
+        }
+
         return try store.mutate { items in
             let ids = Set(items.map(\.id))
             var id = Self.newID()
             while ids.contains(id) { id = Self.newID() }
-            let item = TodoItem(id: id, title: title, scope: scope, day: day,
+            var item = TodoItem(id: id, title: title, scope: scope, day: day,
                                 note: note?.nilIfBlank, source: source?.nilIfBlank)
+            item.category = category
+            item.categorySource = how
             items.append(item)
             return item
         }
@@ -93,11 +116,24 @@ struct TodoService {
 
     @discardableResult
     func update(_ ref: String, title: String? = nil, scope: TodoScope? = nil,
-                date: String? = nil, note: String? = nil) throws -> TodoItem {
+                date: String? = nil, note: String? = nil,
+                category: TodoCategory? = nil, categorySource: CategorySource = .user) throws -> TodoItem {
         let parsed = try parseDate(date)
-        return try store.mutate { items in
+        let updated: TodoItem = try store.mutate { items in
             let i = try Self.resolve(ref, in: items)
-            if let t = title?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty { items[i].title = t }
+            if let t = title?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty {
+                items[i].title = t
+                // 改了标题、而分类是自动猜的 → 重新猜
+                if category == nil, items[i].categorySource?.isAuto ?? true {
+                    let (c, how) = classifier.classify(t)
+                    items[i].category = c
+                    items[i].categorySource = how
+                }
+            }
+            if let category {
+                items[i].category = category
+                items[i].categorySource = categorySource
+            }
             if let note { items[i].note = note.nilIfBlank }
             let newScope = scope ?? items[i].scope
             if scope != nil || parsed != nil {
@@ -113,6 +149,35 @@ struct TodoService {
                 items[i].scope = newScope
             }
             return items[i]
+        }
+        if category != nil, categorySource == .user {
+            classifier.learn(title: updated.title, category: updated.displayCategory)
+        }
+        return updated
+    }
+
+    /// 给没有分类的旧待办补上分类（升级后第一次启动时）
+    @discardableResult
+    func classifyUncategorized() throws -> Int {
+        try store.mutate { items in
+            var n = 0
+            for i in items.indices where items[i].category == nil {
+                let (c, how) = classifier.classify(items[i].title)
+                items[i].category = c
+                items[i].categorySource = how
+                n += 1
+            }
+            return n
+        }
+    }
+
+    /// Apple Intelligence 给出的分类：只覆盖仍然是"自动猜测"的条目
+    func applyModelCategory(id: String, title: String, category: TodoCategory) throws {
+        try store.mutate { items in
+            guard let i = items.firstIndex(where: { $0.id == id }), items[i].title == title,
+                  items[i].categorySource == .rule else { return }
+            items[i].category = category
+            items[i].categorySource = .model
         }
     }
 
@@ -182,7 +247,7 @@ struct TodoService {
 
 enum TodoFormatter {
     static func line(_ t: TodoItem, today: String = Day.today) -> String {
-        var s = "\(t.done ? "[x]" : "[ ]") (\(t.id)) \(t.title)"
+        var s = "\(t.done ? "[x]" : "[ ]") (\(t.id)) [\(t.displayCategory.label)] \(t.title)"
         var meta: [String] = []
         switch t.scope {
         case .today:

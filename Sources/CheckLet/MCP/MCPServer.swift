@@ -4,7 +4,7 @@ import Foundation
 /// Claude Desktop / Claude Code / Codex / Cursor 等支持 MCP 的 AI 工具都通过
 /// `CheckLet.app/Contents/MacOS/CheckLet mcp` 启动它，然后调用下面的工具管理待办。
 final class MCPServer {
-    static let version = "1.0.0"
+    static let version = "1.1.0"
     private let service = TodoService()
     private var clientName = "AI"
 
@@ -101,9 +101,17 @@ final class MCPServer {
             return s
         }
 
+        func category(_ raw: Any?) throws -> TodoCategory? {
+            guard let r = raw as? String, !r.isEmpty, r.lowercased() != "auto", r.lowercased() != "all" else { return nil }
+            guard let c = TodoCategory(loose: r) else {
+                throw TodoError.invalid("category 只能是 \(TodoCategory.allCases.map(\.rawValue).joined(separator: " / "))，收到「\(r)」")
+            }
+            return c
+        }
+
         switch name {
         case "list_todos":
-            let items = service.list(scope: try scope("list"),
+            let items = service.list(scope: try scope("list"), category: try category(a["category"]),
                                      includeDone: bool("include_done") ?? true,
                                      includeUpcoming: bool("include_upcoming") ?? false)
             return TodoFormatter.listing(items)
@@ -111,7 +119,8 @@ final class MCPServer {
         case "add_todo":
             guard let title = str("title") else { throw TodoError.invalid("缺少 title") }
             let item = try service.add(title: title, scope: try scope("list") ?? .today, date: str("date"),
-                                       note: str("note"), source: clientName)
+                                       note: str("note"), source: clientName,
+                                       category: try category(a["category"]), categorySource: .ai)
             return "已添加到「\(item.scope.title)」：\n" + TodoFormatter.line(item)
 
         case "add_todos":
@@ -123,7 +132,8 @@ final class MCPServer {
                 guard let title = entry["title"] as? String else { continue }
                 let s = (entry["list"] as? String).flatMap(TodoScope.init(loose:)) ?? .today
                 let item = try service.add(title: title, scope: s, date: entry["date"] as? String,
-                                           note: entry["note"] as? String, source: clientName)
+                                           note: entry["note"] as? String, source: clientName,
+                                           category: try category(entry["category"]), categorySource: .ai)
                 lines.append("「\(item.scope.title)」" + TodoFormatter.line(item))
             }
             return "已添加 \(lines.count) 条：\n" + lines.joined(separator: "\n")
@@ -137,7 +147,8 @@ final class MCPServer {
         case "update_todo":
             guard let ref = str("id") else { throw TodoError.invalid("需要 id") }
             let item = try service.update(ref, title: str("title"), scope: try scope("list"),
-                                          date: str("date"), note: str("note"))
+                                          date: str("date"), note: str("note"),
+                                          category: try category(a["category"]), categorySource: .ai)
             return "已更新：" + TodoFormatter.line(item)
 
         case "delete_todo":
@@ -159,7 +170,18 @@ final class MCPServer {
     - 本周待办：list=week。
     - 重要日期：list=date，必须给 date（YYYY-MM-DD）。
     未完成的今日/本周待办会自动顺延。完成或删除前如果不确定是哪一条，先调用 list_todos 拿到 id。
+    每条待办都有分类 category，添加时请根据内容主动选一个最合适的：
+    \(TodoCategory.allCases.map { "- \($0.rawValue)：\($0.name)（\($0.meaning)）" }.joined(separator: "\n"))
+    例如"给猫换猫砂"→life，"交房租"→finance，"给妈妈买生日礼物"→social。不传 category 时会按关键词自动分类。
+    用户要求"重新分类/整理分类"时，用 update_todo 逐条修改 category。
     """
+
+    private static let categoryEnum: [String: Any] = [
+        "type": "string",
+        "enum": TodoCategory.allCases.map(\.rawValue),
+        "description": "分类：" + TodoCategory.allCases.map { "\($0.rawValue)=\($0.name)" }.joined(separator: "，")
+            + "。请根据内容选择；不确定可不传，会自动分类",
+    ]
 
     private static let listEnum: [String: Any] = [
         "type": "string",
@@ -177,6 +199,7 @@ final class MCPServer {
                 "properties": [
                     "list": ["type": "string", "enum": ["today", "week", "date", "all"],
                              "description": "只看某个清单，默认 all"],
+                    "category": categoryEnum,
                     "include_done": ["type": "boolean", "description": "是否包含今天已完成的，默认 true"],
                     "include_upcoming": ["type": "boolean", "description": "是否包含还没到日子的未来待办，默认 false"],
                 ],
@@ -195,6 +218,7 @@ final class MCPServer {
                     "date": ["type": "string",
                              "description": "YYYY-MM-DD。date 清单必填；today 清单填未来日期则到那天才出现；week 清单表示那一周"],
                     "note": ["type": "string", "description": "可选备注"],
+                    "category": categoryEnum,
                 ],
                 "required": ["title"],
             ],
@@ -215,6 +239,7 @@ final class MCPServer {
                                 "list": listEnum,
                                 "date": ["type": "string", "description": "YYYY-MM-DD"],
                                 "note": ["type": "string"],
+                                "category": categoryEnum,
                             ],
                             "required": ["title"],
                         ],
@@ -239,7 +264,7 @@ final class MCPServer {
         [
             "name": "update_todo",
             "title": "修改待办",
-            "description": "修改待办的内容、所属清单、日期或备注。",
+            "description": "修改待办的内容、所属清单、日期、备注或分类。",
             "inputSchema": [
                 "type": "object",
                 "properties": [
@@ -248,6 +273,7 @@ final class MCPServer {
                     "list": listEnum,
                     "date": ["type": "string", "description": "YYYY-MM-DD"],
                     "note": ["type": "string", "description": "传空字符串可清除备注"],
+                    "category": categoryEnum,
                 ],
                 "required": ["id"],
             ],

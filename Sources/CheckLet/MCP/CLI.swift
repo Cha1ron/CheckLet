@@ -35,10 +35,17 @@ enum CLI {
         do {
             switch cmd {
             case "list", "ls":
+                let all = flag("--all", "-a")
+                let cat = option("--cat", "-c").flatMap(TodoCategory.init(loose:))
                 let scope = rest.first.flatMap(TodoScope.init(loose:))
-                print(TodoFormatter.listing(service.list(scope: scope, includeUpcoming: flag("--all", "-a"))), terminator: "")
+                print(TodoFormatter.listing(service.list(scope: scope, category: cat, includeUpcoming: all)), terminator: "")
             case "add":
                 let note = option("--note", "-n")
+                var category: TodoCategory?
+                if let raw = option("--cat", "-c") {
+                    guard let c = TodoCategory(loose: raw) else { throw TodoError.invalid("未知分类：\(raw)") }
+                    category = c
+                }
                 var scope: TodoScope = .today
                 var date: String?
                 if let d = option("--date", "-d") { scope = .date; date = d }
@@ -46,7 +53,8 @@ enum CLI {
                 if flag("--week", "-w") { scope = .week }
                 if flag("--today", "-t") { scope = .today }
                 let title = rest.joined(separator: " ")
-                let item = try service.add(title: title, scope: scope, date: date, note: note, source: "cli")
+                let item = try service.add(title: title, scope: scope, date: date, note: note, source: "cli",
+                                           category: category)
                 print("已添加到「\(item.scope.title)」: " + TodoFormatter.line(item))
             case "done", "undo":
                 let item = try service.setDone(rest.joined(separator: " "), done: cmd == "done")
@@ -73,12 +81,14 @@ enum CLI {
     用法:
       CheckLet                         启动悬浮球
       CheckLet mcp                     以 MCP 服务方式运行（给 AI 工具用）
-      CheckLet list [today|week|date]  查看待办（-a 包含未来的）
+      CheckLet list [today|week|date]  查看待办（-a 包含未来的，-c 生活 只看某分类）
       CheckLet add <内容> [选项]        添加待办
           --week, -w                   加到本周
           --date, -d <日期>            加到重要日期，如 2026-12-01 / 12-01 / 明天
           --on <日期>                  今日待办在指定那天出现
           --note, -n <备注>
+          --cat, -c <分类>              工作/学习/生活/健康/财务/人情/其他（不填自动分类，
+                                       也可以在内容里写 #生活）
       CheckLet done <id或标题>          打勾
       CheckLet undo <id或标题>          取消打勾
       CheckLet rm <id或标题>            删除

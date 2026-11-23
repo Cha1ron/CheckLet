@@ -40,6 +40,21 @@ struct TodoItem: Codable, Identifiable, Equatable {
     var source: String?
     var createdAt: Date = Date()
     var doneAt: Date?
+    /// 分类 id 与来源（存成字符串，未来新增分类时旧版本也不会读坏文件）
+    var categoryID: String?
+    var categorySourceID: String?
+
+    var category: TodoCategory? {
+        get { categoryID.flatMap(TodoCategory.init(rawValue:)) }
+        set { categoryID = newValue?.rawValue }
+    }
+
+    var categorySource: CategorySource? {
+        get { categorySourceID.flatMap(CategorySource.init(rawValue:)) }
+        set { categorySourceID = newValue?.rawValue }
+    }
+
+    var displayCategory: TodoCategory { category ?? .other }
 
     // MARK: - 显示规则
 

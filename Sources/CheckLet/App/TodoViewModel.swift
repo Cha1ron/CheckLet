@@ -4,7 +4,11 @@ import Foundation
 final class TodoViewModel: ObservableObject {
     @Published private(set) var items: [TodoItem] = []
     @Published private(set) var today: String = Day.today
-    @Published var tab: TodoScope = .today
+    @Published var tab: TodoScope = .today {
+        didSet { if oldValue != tab { categoryFilter = nil } }
+    }
+    /// 面板里按分类筛选（nil = 全部）
+    @Published var categoryFilter: TodoCategory?
     @Published var pinned: Bool = UserDefaults.standard.bool(forKey: Prefs.pinned) {
         didSet { UserDefaults.standard.set(pinned, forKey: Prefs.pinned) }
     }
@@ -18,6 +22,7 @@ final class TodoViewModel: ObservableObject {
 
     private let store: TodoStore
     private let service: TodoService
+    private let smart = SmartClassifier()
     private var lastModified: Date?
     private var timer: Timer?
 
@@ -45,11 +50,34 @@ final class TodoViewModel: ObservableObject {
         lastModified = store.modificationDate
         let loaded = store.load()
         if loaded != items { items = loaded }
+        // 旧数据补分类；"关键词猜的"交给 Apple Intelligence 复核（如果可用）
+        if loaded.contains(where: { $0.category == nil }) {
+            _ = try? service.classifyUncategorized()
+            DispatchQueue.main.async { self.reload() }
+            return
+        }
+        smart.refine(loaded, service: service) { [weak self] in self?.reload() }
     }
 
     // MARK: 读
 
     func visible(_ scope: TodoScope) -> [TodoItem] { items.visible(scope, today: today) }
+
+    /// 当前标签页 + 分类筛选后的列表
+    var filtered: [TodoItem] {
+        let list = visible(tab)
+        guard let f = categoryFilter else { return list }
+        return list.filter { $0.displayCategory == f }
+    }
+
+    /// 当前标签页里出现过的分类及未完成数量
+    var categoriesInTab: [(TodoCategory, Int)] {
+        let list = visible(tab)
+        return TodoCategory.allCases.compactMap { c in
+            let inCat = list.filter { $0.displayCategory == c }
+            return inCat.isEmpty ? nil : (c, inCat.filter { !$0.done }.count)
+        }
+    }
 
     func openCount(_ scope: TodoScope) -> Int { visible(scope).filter { !$0.done }.count }
 
@@ -65,8 +93,12 @@ final class TodoViewModel: ObservableObject {
 
     // MARK: 写
 
-    func add(_ title: String, date: Date? = nil) {
-        perform { try service.add(title: title, scope: tab, date: date.map(Day.string), source: nil) }
+    func add(_ title: String, date: Date? = nil, category: TodoCategory? = nil) {
+        perform { try service.add(title: title, scope: tab, date: date.map(Day.string), source: nil, category: category) }
+    }
+
+    func setCategory(_ id: String, _ category: TodoCategory) {
+        perform { try service.update(id, category: category, categorySource: .user) }
     }
 
     func toggle(_ id: String) { perform { try service.toggle(id: id) } }

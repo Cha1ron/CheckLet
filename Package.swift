@@ -7,7 +7,11 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "CheckLet",
-            path: "Sources/CheckLet"
+            path: "Sources/CheckLet",
+            linkerSettings: [
+                // Apple Intelligence 框架只在 macOS 26+ 存在：弱链接，旧系统上照常启动
+                .unsafeFlags(["-Xlinker", "-weak_framework", "-Xlinker", "FoundationModels"]),
+            ]
         )
     ]
 )

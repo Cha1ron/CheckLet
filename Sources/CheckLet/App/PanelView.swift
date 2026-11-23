@@ -1,15 +1,18 @@
+import AppKit
 import SwiftUI
 
 struct PanelView: View {
     @ObservedObject var vm: TodoViewModel
     @State private var draft = ""
     @State private var pickedDate = Calendar.current.date(byAdding: .day, value: 7, to: Date()) ?? Date()
+    @State private var pickedCategory: TodoCategory?
     @FocusState private var inputFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             header
             tabs
+            categoryFilters
             Divider().opacity(0.4).padding(.horizontal, 14)
             list
             if let err = vm.errorMessage {
@@ -92,10 +95,33 @@ struct PanelView: View {
         .padding(.bottom, 8)
     }
 
+    // MARK: 分类筛选
+
+    @ViewBuilder private var categoryFilters: some View {
+        let cats = vm.categoriesInTab
+        if cats.count > 1 || vm.categoryFilter != nil {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 5) {
+                    FilterChip(text: "全部", color: .secondary, selected: vm.categoryFilter == nil) {
+                        vm.categoryFilter = nil
+                    }
+                    ForEach(cats, id: \.0) { c, open in
+                        FilterChip(text: open > 0 ? "\(c.label) \(open)" : c.label, color: c.color,
+                                   selected: vm.categoryFilter == c) {
+                            vm.categoryFilter = vm.categoryFilter == c ? nil : c
+                        }
+                    }
+                }
+                .padding(.horizontal, 14)
+            }
+            .padding(.bottom, 8)
+        }
+    }
+
     // MARK: 列表
 
     private var list: some View {
-        let items = vm.visible(vm.tab)
+        let items = vm.filtered
         return Group {
             if items.isEmpty {
                 VStack(spacing: 8) {
@@ -146,9 +172,16 @@ struct PanelView: View {
 
     private var addBar: some View {
         HStack(spacing: 8) {
-            Image(systemName: "plus")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.secondary)
+            Button {
+                CategoryMenu.show(current: pickedCategory, includeAuto: true) { pickedCategory = $0 }
+            } label: {
+                Text(pickedCategory?.emoji ?? "✨")
+                    .font(.system(size: 13))
+                    .frame(width: 22, height: 22)
+                    .background(Color.primary.opacity(0.08), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .help(pickedCategory.map { "分类：\($0.name)" } ?? "分类：自动识别（也可以在内容里写 #生活）")
             TextField(placeholder, text: $draft)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
@@ -181,8 +214,9 @@ struct PanelView: View {
     private func submit() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        vm.add(text, date: vm.tab == .date ? pickedDate : nil)
+        vm.add(text, date: vm.tab == .date ? pickedDate : nil, category: pickedCategory)
         draft = ""
+        pickedCategory = nil
     }
 }
 
@@ -251,23 +285,24 @@ struct TodoRow: View {
 
     @ViewBuilder private var meta: some View {
         let parts = metaParts
-        if !parts.isEmpty || item.sourceLabel != nil {
-            HStack(spacing: 6) {
-                ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
-                    Text(part.text)
-                        .font(.system(size: 11))
-                        .foregroundStyle(part.color)
-                        .lineLimit(1)
-                        .fixedSize()
-                }
-                if let src = item.sourceLabel {
-                    Text(src)
-                        .font(.system(size: 9.5, weight: .medium))
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(Color.accentColor.opacity(0.18), in: Capsule())
-                        .foregroundStyle(.secondary)
-                }
+        HStack(spacing: 6) {
+            CategoryChip(category: item.displayCategory, auto: item.categorySource?.isAuto ?? true) {
+                CategoryMenu.show(current: item.category) { if let c = $0 { vm.setCategory(item.id, c) } }
+            }
+            ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
+                Text(part.text)
+                    .font(.system(size: 11))
+                    .foregroundStyle(part.color)
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+            if let src = item.sourceLabel {
+                Text(src)
+                    .font(.system(size: 9.5, weight: .medium))
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(Color.accentColor.opacity(0.18), in: Capsule())
+                    .foregroundStyle(.secondary)
             }
         }
         if let note = item.note {
@@ -298,6 +333,11 @@ struct TodoRow: View {
     @ViewBuilder private var menu: some View {
         Button(item.done ? "取消完成" : "完成") { vm.toggle(item.id) }
         Button("编辑") { startEdit() }
+        Menu("分类") {
+            ForEach(TodoCategory.allCases) { c in
+                Button((item.category == c ? "✓ " : "") + c.label) { vm.setCategory(item.id, c) }
+            }
+        }
         Divider()
         if item.scope == .today {
             Button("推迟到明天") { vm.postpone(item.id) }
@@ -340,5 +380,86 @@ struct IconButton: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .help(help)
+    }
+}
+
+// MARK: - 分类组件
+
+extension TodoCategory {
+    var color: Color {
+        Color(red: Double((hex >> 16) & 0xFF) / 255, green: Double((hex >> 8) & 0xFF) / 255, blue: Double(hex & 0xFF) / 255)
+    }
+}
+
+struct CategoryChip: View {
+    let category: TodoCategory
+    let auto: Bool
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(category.label)
+                .font(.system(size: 10, weight: .medium))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 1.5)
+                .foregroundStyle(category.color)
+                .background(category.color.opacity(hovering ? 0.28 : 0.16), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(auto ? "自动分类 · 点击修改（会记住你的习惯）" : "点击修改分类")
+    }
+}
+
+struct FilterChip: View {
+    let text: String
+    let color: Color
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(text)
+                .font(.system(size: 11, weight: selected ? .semibold : .regular))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .foregroundStyle(selected ? color : Color.secondary)
+                .background(selected ? color.opacity(0.18) : Color.primary.opacity(0.05), in: Capsule())
+                .overlay(Capsule().strokeBorder(selected ? color.opacity(0.5) : Color.clear, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// 在鼠标位置弹出分类菜单（原生 NSMenu，在不抢焦点的浮动面板里也能用）
+enum CategoryMenu {
+    private final class Handler: NSObject {
+        let onPick: (TodoCategory?) -> Void
+        init(_ onPick: @escaping (TodoCategory?) -> Void) { self.onPick = onPick }
+        @objc func pick(_ sender: NSMenuItem) {
+            onPick((sender.representedObject as? String).flatMap(TodoCategory.init(rawValue:)))
+        }
+    }
+
+    static func show(current: TodoCategory?, includeAuto: Bool = false, onPick: @escaping (TodoCategory?) -> Void) {
+        let handler = Handler(onPick)
+        let menu = NSMenu()
+        if includeAuto {
+            let auto = NSMenuItem(title: "✨ 自动识别", action: #selector(Handler.pick(_:)), keyEquivalent: "")
+            auto.target = handler
+            auto.state = current == nil ? .on : .off
+            menu.addItem(auto)
+            menu.addItem(.separator())
+        }
+        for c in TodoCategory.allCases {
+            let item = NSMenuItem(title: c.label, action: #selector(Handler.pick(_:)), keyEquivalent: "")
+            item.target = handler
+            item.representedObject = c.rawValue
+            item.state = c == current ? .on : .off
+            menu.addItem(item)
+        }
+        menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+        withExtendedLifetime(handler) {}
     }
 }

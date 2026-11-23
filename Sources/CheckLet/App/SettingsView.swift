@@ -50,6 +50,14 @@ struct GeneralSettings: View {
                 }
                 Toggle("显示悬浮球（关闭后可用快捷键或菜单栏图标打开）", isOn: $showBall)
             }
+            Section("智能分类") {
+                Label(SmartClassifier.statusText, systemImage: "sparkles")
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("不选分类时会自动识别；点击待办上的分类标签可以修改，CheckLet 会记住你的习惯。添加时也可以在内容里写 #生活、#工作。通过 Claude / Codex 添加时，由 AI 直接选择分类。")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Section("快捷键") {
                 Picker("显示 / 隐藏面板", selection: $hotKey) {
                     ForEach(HotKeyPreset.allCases) { p in

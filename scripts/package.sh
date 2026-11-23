@@ -1,15 +1,15 @@
 #!/bin/bash
-# 打包 CheckLet：生成通用二进制（Apple 芯片 + Intel）的 .app，以及可以发给朋友的 .dmg / .zip
+# 打包 CheckLet：生成通用二进制（Apple 芯片 + Intel）的 .app，以及用于发布的 .dmg / .zip
 #
-#   ./scripts/package.sh                 # 默认 ad-hoc 签名（朋友第一次打开需要在系统设置里点"仍要打开"）
+#   ./scripts/package.sh                 # 默认 ad-hoc 签名（用户第一次打开需要在系统设置里点"仍要打开"）
 #   SIGN_IDENTITY="Developer ID Application: 你的名字 (TEAMID)" NOTARY_PROFILE=checklet ./scripts/package.sh
-#                                        # 有 Apple 开发者账号时：正式签名 + 公证，朋友可直接打开
+#                                        # 有 Apple 开发者账号时：正式签名 + 公证，用户可直接打开
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 APP_NAME="CheckLet"
 BUNDLE_ID="${BUNDLE_ID:-com.checklet.app}"
-VERSION="${VERSION:-1.0.0}"
+VERSION="${VERSION:-1.1.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-$(date +%Y%m%d%H%M)}"
 MIN_MACOS="13.0"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
@@ -98,6 +98,6 @@ fi
 echo ""
 echo "✅ 完成"
 echo "   App: $APP"
-echo "   DMG: $DMG   ← 发给朋友这个"
+echo "   DMG: $DMG   ← 上传到 GitHub Releases"
 echo "   ZIP: $ZIP"
 du -sh "$APP" "$DMG" "$ZIP" | sed 's/^/   /'
